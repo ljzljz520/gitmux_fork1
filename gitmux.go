@@ -11,6 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/arl/gitmux/json"
+	"github.com/arl/gitmux/push"
 	"github.com/arl/gitmux/tmux"
 )
 
@@ -127,7 +128,23 @@ func main() {
 	}
 
 	// Set defauit formater.
-	var fmter formater = &tmux.Formater{Config: cfg.Tmux}
+	tf := &tmux.Formater{Config: cfg.Tmux}
+
+	// Resolve the push destination for the push layout components only, using
+	// local information exclusively (no fetch/network). On an unborn branch
+	// (initial state) or in detached HEAD state, the push target is unknown.
+	if cfg.Tmux.LayoutNeedsPush() && !st.IsInitial && !st.IsDetached && st.LocalBranch != "" {
+		ps := push.Resolve(ctx, st.LocalBranch)
+		tf.Push = &tmux.PushStatus{
+			Target:      ps.Target,
+			TargetKnown: ps.TargetKnown,
+			RefKnown:    ps.RefKnown,
+			Ahead:       ps.Ahead,
+			Behind:      ps.Behind,
+		}
+	}
+
+	var fmter formater = tf
 	if dbg {
 		fmter = &json.Formater{}
 	}

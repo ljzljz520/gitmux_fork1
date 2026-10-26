@@ -135,6 +135,7 @@ tmux:
         clean: ✔
         insertions: Σ
         deletions: Δ
+        unknown: '?'
     styles:
         clear: '#[fg=default]'
         state: '#[fg=red,bold]'
@@ -149,6 +150,8 @@ tmux:
         clean: '#[fg=green,bold]'
         insertions: '#[fg=green]'
         deletions: '#[fg=red]'
+        push: '#[fg=magenta]'
+        pushdivergence: '#[fg=yellow]'
     layout: [branch, .., remote-branch, divergence, '- ', flags]
     options:
         branch_max_len: 0
@@ -197,6 +200,7 @@ of Git status displayed in `tmux` status string:
         insertions: Σ    # count of inserted lines (stats section).
         deletions: Δ     # count of deleted lines (stats section).
         clean: ✔         # Shown when the working tree is clean.
+        unknown: "?"     # Push destination/divergence can't be determined.
 ```
 
 
@@ -221,6 +225,8 @@ See the [`STYLES` section](https://man7.org/linux/man-pages/man1/tmux.1.html#STY
     insertions: '#[fg=green]'       # 'insertions' count
     deletions: '#[fg=red]'          # 'deletions' count
     clean: '#[fg=green,bold]'       # 'clean' symbol
+    push: '#[fg=magenta]'           # Push destination branch name
+    pushdivergence: '#[fg=yellow]'  # divergence counts vs the push destination
 ```
 
 ### Layout components
@@ -255,12 +261,46 @@ This is the list of the possible keywords for `layout`:
 | Layout keywords  | Description                                        |       Example        |
 | :--------------: | :------------------------------------------------- | :------------------: |
 |     `branch`     | local branch name                                  |        `main`        |
-| `remote-branch`  | remote branch name                                 |    `origin/main`     |
-|   `divergence`   | divergence local/remote branch, if any             |       `↓·2↑·1`       |
+| `remote-branch`  | upstream (pull) remote branch name                 |    `origin/main`     |
+|   `divergence`   | divergence local/upstream branch, if any           |       `↓·2↑·1`       |
 |     `remote`     | alias for `remote-branch` followed by `divergence` | `origin/main ↓·2↑·1` |
+|  `push-branch`   | push destination branch, resolved offline with git push rules (`branch.<name>.pushRemote`, `remote.pushDefault`, `branch.<name>.remote`, then `origin`) | `fork/main` / `?` |
+| `push-divergence`| divergence local/push-destination branch, if any; `?` when unknown |   `↓·2↑·1` / `?`    |
+|      `push`      | alias for `push-branch` followed by `push-divergence` |  `fork/main ↑·1`  |
 |     `flags`      | Symbols representing the working tree state        |    `✚ 1 ⚑ 1 … 2`     |
 |     `stats`      | Insertions/deletions (lines). Disabled by default  |      `Σ56 Δ21`       |
 | any string `foo` | Non-keywords are shown as-is                       |    `hello gitmux`    |
+
+
+#### Push destination and triangular workflows
+
+In a triangular workflow (you pull from `upstream`/`origin` but push to your
+personal fork), the regular `remote-branch`/`divergence` components only
+describe the upstream you pull from. The `push-branch` and `push-divergence`
+components show where `git push` (with no arguments) would send your commits,
+and whether those commits are already there:
+
+```yaml
+layout: [branch, " pull:", remote, " push:", push, " - ", flags]
+```
+
+The destination is resolved **locally, without any network access**, following
+the same rules as `git push`: `branch.<name>.pushRemote`, then
+`remote.pushDefault`, then `branch.<name>.remote` (or the unique remote), and
+the destination branch honors `remote.<name>.push` refspecs,
+`remote.<name>.mirror` and `push.default` (`simple`/`current`/`upstream`).
+
+The `unknown` symbol (default `?`) is shown whenever the state genuinely can't
+be determined, instead of guessing:
+
+ - no push destination is configured (or it doesn't resolve to a real remote),
+ - `push.default` is `matching` or `nothing`, names mismatch in `simple` mode,
+   or the push refspecs don't map the current branch to a unique destination,
+ - the destination is known but its remote-tracking ref doesn't exist locally
+   (you never fetched/pushed there): the divergence is unknown until a fetch.
+
+These components are opt-in: the default layout is unchanged and no extra git
+commands run until a push component appears in `layout`.
 
 
 Some example layouts:

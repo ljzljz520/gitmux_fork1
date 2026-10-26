@@ -26,6 +26,10 @@ tmux:
         deletions: Δ
         # Shown when the working tree is clean.
         clean: ✔
+        # Shown when the push destination, or the divergence relative to it,
+        # can't be determined (no uniquely configured push target, or the
+        # remote-tracking ref is missing locally and a fetch would be needed).
+        unknown: "?"
 
     # Styles are tmux format strings used to specify text colors and attributes
     # of Git status elements. See the STYLES section of tmux man page.
@@ -57,15 +61,22 @@ tmux:
         deletions: "#[fg=red]"
         # 'clean' symbol
         clean: "#[fg=green,bold]"
+        # Push destination branch name (e.g. `fork/main` in a triangular workflow)
+        push: "#[fg=magenta]"
+        # divergence counts relative to the push destination
+        pushdivergence: "#[fg=yellow]"
 
     # The layout section defines what components gitmux shows and the order in
     # which they appear on tmux status bar.
     #
     # Allowed components:
     #  - branch:            local branch name. Examples: `⎇ main`, `⎇ :345e7a0` or `[rebase]`
-    #  - remote-branch:     remote branch name, for example: `origin/main`.
-    #  - divergence:        divergence between local and remote branch, if any. Example: `↓·2↑·1`
+    #  - remote-branch:     upstream (pull) remote branch name, for example: `origin/main`.
+    #  - divergence:        divergence between local and upstream branch, if any. Example: `↓·2↑·1`
     #  - remote:            alias for `remote-branch` followed by `divergence`, for example: `origin/main ↓·2↑·1`
+    #  - push-branch:       push destination branch, resolved with git push rules (offline), for example: `fork/main`. Shows the `unknown` symbol when no destination can be uniquely determined.
+    #  - push-divergence:   divergence between local and push destination branch, if any. Example: `↓·2↑·1`. Shows the `unknown` symbol when the destination is unknown or its remote-tracking ref is missing locally (a fetch would be required).
+    #  - push:              alias for `push-branch` followed by `push-divergence`, for example: `fork/main ↑·1`
     #  - flags:             symbols representing the working tree state, for example `✚ 1 ⚑ 1 … 2`
     #  - stats:             insertions/deletions (lines), for example`Σ56 Δ21`
     #  - some string `foo`: any other character of string is directly shown, for example `foo` or `|`

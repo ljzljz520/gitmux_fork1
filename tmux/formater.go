@@ -39,6 +39,8 @@ type symbols struct {
 
 	Insertions string // Insertions is the string shown before the count of inserted lines.
 	Deletions  string // Deletions is the string shown before the count of deleted lines.
+
+	Unknown string // Unknown is the string shown when the push destination (or its divergence) can't be determined.
 }
 
 type styles struct {
@@ -59,6 +61,29 @@ type styles struct {
 
 	Insertions string // Insertions is the style string printed before the count of inserted lines.
 	Deletions  string // Deletions is the style string printed before the count of deleted lines.
+
+	Push           string // Push is the style string printed before the push destination branch.
+	PushDivergence string // PushDivergence is the style string printed before the divergence counts against the push destination.
+}
+
+// PushStatus describes the default push destination of the local branch and
+// the local branch divergence relative to it, as resolved using local
+// information only (no network).
+type PushStatus struct {
+	// Target is the short name of the push destination, "<remote>/<branch>",
+	// e.g. "fork/main". Empty unless TargetKnown is true.
+	Target string
+	// TargetKnown reports whether the push destination could be uniquely
+	// determined following the git push rules.
+	TargetKnown bool
+	// RefKnown reports whether the destination remote-tracking ref exists
+	// locally, in which case Ahead and Behind are meaningful. When false, the
+	// divergence is unknown (a fetch would be required to determine it).
+	RefKnown bool
+	// Ahead is the number of local commits not yet pushed to the destination.
+	Ahead int
+	// Behind is the number of destination commits missing locally.
+	Behind int
 }
 
 const (
@@ -101,6 +126,24 @@ type options struct {
 type Formater struct {
 	Config
 	st *gitstatus.Status
+
+	// Push holds the resolved push destination and divergence information.
+	// A nil value means that the push status is not available, in which case
+	// the push-related layout components render as unknown.
+	Push *PushStatus
+}
+
+// LayoutNeedsPush reports whether the layout references one of the push
+// components ("push", "push-branch" or "push-divergence"), i.e. whether the
+// push destination needs to be resolved.
+func (c Config) LayoutNeedsPush() bool {
+	for _, item := range c.Layout {
+		switch item {
+		case "push", "push-branch", "push-divergence":
+			return true
+		}
+	}
+	return false
 }
 
 // truncate returns s, truncated so that it is no more than max runes long.
@@ -196,6 +239,15 @@ func (f *Formater) format() string {
 			comps = append(comps, f.remoteBranch())
 		case "divergence":
 			comps = append(comps, f.divergence())
+		case "push":
+			comps = append(comps, f.pushBranch())
+			// The push alias already conveys an unknown destination through
+			// the branch component, don't duplicate that marker.
+			comps = append(comps, f.pushDivergence(f.pushTargetKnown()))
+		case "push-branch":
+			comps = append(comps, f.pushBranch())
+		case "push-divergence":
+			comps = append(comps, f.pushDivergence(true))
 		case "flags":
 			comps = append(comps, f.flags())
 		case "stats":
@@ -255,27 +307,34 @@ func (f *Formater) remoteBranch() string {
 }
 
 func (f *Formater) divergence() string {
-	if f.st.BehindCount == 0 && f.st.AheadCount == 0 {
+	return f.divergenceString(f.Styles.Divergence, f.st.BehindCount, f.st.AheadCount)
+}
+
+// divergenceString renders behind/ahead divergence counts with the given
+// style, honoring the swap_divergence and divergence_space options. It
+// returns the empty string when both counts are zero.
+func (f *Formater) divergenceString(style string, behind, ahead int) string {
+	if behind == 0 && ahead == 0 {
 		return ""
 	}
 
-	behind := ""
-	ahead := ""
-	s := f.Styles.Clear + f.Styles.Divergence
-	if f.st.BehindCount != 0 {
-		behind = fmt.Sprintf("%s%d", f.Symbols.Behind, f.st.BehindCount)
+	behindStr := ""
+	aheadStr := ""
+	s := f.Styles.Clear + style
+	if behind != 0 {
+		behindStr = fmt.Sprintf("%s%d", f.Symbols.Behind, behind)
 	}
 
-	if f.st.AheadCount != 0 {
-		ahead = fmt.Sprintf("%s%d", f.Symbols.Ahead, f.st.AheadCount)
+	if ahead != 0 {
+		aheadStr = fmt.Sprintf("%s%d", f.Symbols.Ahead, ahead)
 	}
 
 	// Handle 'swap divergence'
 	var left, right string
 	if !f.Options.SwapDivergence {
-		left, right = behind, ahead
+		left, right = behindStr, aheadStr
 	} else {
-		left, right = ahead, behind
+		left, right = aheadStr, behindStr
 	}
 
 	// Handle 'divergence space'
@@ -284,6 +343,56 @@ func (f *Formater) divergence() string {
 		space = " "
 	}
 	return s + left + space + right
+}
+
+// pushTargetKnown reports whether a uniquely identified push destination is
+// available.
+func (f *Formater) pushTargetKnown() bool {
+	return f.Push != nil && f.Push.TargetKnown
+}
+
+// pushBranch renders the push destination branch name (e.g. "fork/main"), or
+// the unknown marker if the destination can't be uniquely determined.
+func (f *Formater) pushBranch() string {
+	if !f.pushTargetKnown() || f.Push.Target == "" {
+		return f.unknown(f.Styles.Push)
+	}
+
+	branch := truncate(f.Push.Target, f.Options.Ellipsis, f.Options.BranchMaxLen, f.Options.BranchTrim)
+	return f.Styles.Clear + f.Styles.Push + branch
+}
+
+// pushDivergence renders the local branch divergence relative to its push
+// destination.
+//
+// When the destination is known but its remote-tracking ref doesn't exist
+// locally, the divergence can't be computed without fetching, so the unknown
+// marker is shown.
+//
+// When the destination itself is unknown, the marker is only shown if
+// showUnknownMarker is true. This lets the "push" alias avoid printing it
+// twice (the branch component already reports the unknown state).
+func (f *Formater) pushDivergence(showUnknownMarker bool) string {
+	switch {
+	case !f.pushTargetKnown():
+		if !showUnknownMarker {
+			return ""
+		}
+		return f.unknown(f.Styles.PushDivergence)
+	case !f.Push.RefKnown:
+		return f.unknown(f.Styles.PushDivergence)
+	default:
+		return f.divergenceString(f.Styles.PushDivergence, f.Push.Behind, f.Push.Ahead)
+	}
+}
+
+// unknown renders the unknown marker using style, or nothing when the unknown
+// symbol is empty.
+func (f *Formater) unknown(style string) string {
+	if f.Symbols.Unknown == "" {
+		return ""
+	}
+	return f.Styles.Clear + style + f.Symbols.Unknown
 }
 
 func (f *Formater) currentRef() string {
@@ -300,7 +409,7 @@ func (f *Formater) appendFlag(flags []string, style, symbol string, count int) [
 	if count == 0 {
 		return flags
 	}
-	
+
 	if f.Options.FlagsWithoutCount {
 		// When flags_without_count is true, show symbol only (empty string if symbol is empty)
 		if symbol == "" {
@@ -308,7 +417,7 @@ func (f *Formater) appendFlag(flags []string, style, symbol string, count int) [
 		}
 		return append(flags, fmt.Sprintf("%s%s", style, symbol))
 	}
-	
+
 	// When flags_without_count is false, show symbol + count, or just count if symbol is empty
 	return append(flags, fmt.Sprintf("%s%s%d", style, symbol, count))
 }

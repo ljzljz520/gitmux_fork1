@@ -1429,6 +1429,173 @@ func TestFlagsWithEmptySymbolsAndFlagsWithoutCount(t *testing.T) {
 	}
 }
 
+func TestPushComponents(t *testing.T) {
+	clear := "[style:clear]"
+
+	tests := []struct {
+		name           string
+		styles         styles
+		symbols        symbols
+		options        options
+		push           *PushStatus
+		wantBranch     string
+		wantDivergence string // standalone push-divergence component
+	}{
+		{
+			name:           "nil push status renders unknown",
+			styles:         styles{Clear: clear, Push: "[style:push]", PushDivergence: "[style:pd]"},
+			symbols:        symbols{Unknown: "?"},
+			push:           nil,
+			wantBranch:     clear + "[style:push]?",
+			wantDivergence: clear + "[style:pd]?",
+		},
+		{
+			name:           "unknown target renders unknown",
+			styles:         styles{Clear: clear, Push: "[style:push]", PushDivergence: "[style:pd]"},
+			symbols:        symbols{Unknown: "?"},
+			push:           &PushStatus{},
+			wantBranch:     clear + "[style:push]?",
+			wantDivergence: clear + "[style:pd]?",
+		},
+		{
+			name:    "empty unknown symbol hides the markers",
+			styles:  styles{Clear: clear, Push: "[style:push]", PushDivergence: "[style:pd]"},
+			symbols: symbols{Unknown: ""},
+			push:    nil,
+		},
+		{
+			name:           "target known, tracking ref missing locally",
+			styles:         styles{Clear: clear, Push: "[style:push]", PushDivergence: "[style:pd]"},
+			symbols:        symbols{Unknown: "?", Ahead: "↑·", Behind: "↓·"},
+			push:           &PushStatus{Target: "fork/main", TargetKnown: true},
+			wantBranch:     clear + "[style:push]fork/main",
+			wantDivergence: clear + "[style:pd]?",
+		},
+		{
+			name:           "aligned with push target: divergence empty",
+			styles:         styles{Clear: clear, Push: "[style:push]", PushDivergence: "[style:pd]"},
+			symbols:        symbols{Unknown: "?", Ahead: "↑·", Behind: "↓·"},
+			push:           &PushStatus{Target: "fork/main", TargetKnown: true, RefKnown: true},
+			wantBranch:     clear + "[style:push]fork/main",
+			wantDivergence: "",
+		},
+		{
+			name:           "unpushed local commits",
+			styles:         styles{Clear: clear, Push: "[style:push]", PushDivergence: "[style:pd]"},
+			symbols:        symbols{Unknown: "?", Ahead: "↑·", Behind: "↓·"},
+			push:           &PushStatus{Target: "fork/main", TargetKnown: true, RefKnown: true, Ahead: 3},
+			wantBranch:     clear + "[style:push]fork/main",
+			wantDivergence: clear + "[style:pd]↑·3",
+		},
+		{
+			name:           "diverged both ways from push target",
+			styles:         styles{Clear: clear, Push: "[style:push]", PushDivergence: "[style:pd]"},
+			symbols:        symbols{Unknown: "?", Ahead: "↑·", Behind: "↓·"},
+			push:           &PushStatus{Target: "fork/main", TargetKnown: true, RefKnown: true, Ahead: 2, Behind: 1},
+			wantBranch:     clear + "[style:push]fork/main",
+			wantDivergence: clear + "[style:pd]↓·1↑·2",
+		},
+		{
+			name: "truncated push target",
+			styles: styles{
+				Clear: clear, Push: "[style:push]", PushDivergence: "[style:pd]",
+			},
+			symbols: symbols{Unknown: "?", Ahead: "↑·", Behind: "↓·"},
+			options: options{
+				BranchMaxLen: 7,
+				BranchTrim:   dirRight,
+				Ellipsis:     "…",
+			},
+			push: &PushStatus{
+				Target: "fork/some-long-branch", TargetKnown: true, RefKnown: true, Ahead: 1,
+			},
+			wantBranch:     clear + "[style:push]fork/s…",
+			wantDivergence: clear + "[style:pd]↑·1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &Formater{
+				Config: Config{
+					Styles:  tt.styles,
+					Symbols: tt.symbols,
+					Options: tt.options,
+				},
+				Push: tt.push,
+			}
+			compareStrings(t, tt.wantBranch, f.pushBranch())
+			compareStrings(t, tt.wantDivergence, f.pushDivergence(true))
+		})
+	}
+}
+
+func TestPushLayoutAlias(t *testing.T) {
+	clear := "[style:clear]"
+	newF := func(ps *PushStatus) *Formater {
+		return &Formater{
+			Config: Config{
+				Styles: styles{
+					Clear: clear, Push: "[style:push]", PushDivergence: "[style:pd]",
+				},
+				Symbols: symbols{Unknown: "?", Ahead: "↑·", Behind: "↓·"},
+				Layout:  []string{"push"},
+			},
+			Push: ps,
+		}
+	}
+
+	t.Run("unknown target shows a single marker", func(t *testing.T) {
+		f := newF(nil)
+		want := clear + "[style:push]?" + resetStyles
+		compareStrings(t, want, f.format())
+	})
+
+	t.Run("known target, missing tracking ref shows name plus marker", func(t *testing.T) {
+		f := newF(&PushStatus{Target: "fork/main", TargetKnown: true})
+		want := clear + "[style:push]fork/main " + clear + "[style:pd]?" + resetStyles
+		compareStrings(t, want, f.format())
+	})
+
+	t.Run("known target with divergence", func(t *testing.T) {
+		f := newF(&PushStatus{
+			Target: "fork/main", TargetKnown: true, RefKnown: true, Ahead: 2, Behind: 1,
+		})
+		want := clear + "[style:push]fork/main " + clear + "[style:pd]↓·1↑·2" + resetStyles
+		compareStrings(t, want, f.format())
+	})
+
+	t.Run("aligned shows just the target name", func(t *testing.T) {
+		f := newF(&PushStatus{Target: "fork/main", TargetKnown: true, RefKnown: true})
+		want := clear + "[style:push]fork/main" + resetStyles
+		compareStrings(t, want, f.format())
+	})
+}
+
+func TestLayoutNeedsPush(t *testing.T) {
+	if (Config{}).LayoutNeedsPush() {
+		t.Error("empty layout must not need push resolution")
+	}
+	for _, layout := range [][]string{
+		{"push"},
+		{"push-branch"},
+		{"push-divergence"},
+		{"branch", " ", "remote", " ", "push", " ", "flags"},
+	} {
+		if !(Config{Layout: layout}).LayoutNeedsPush() {
+			t.Errorf("layout %v must need push resolution", layout)
+		}
+	}
+	for _, layout := range [][]string{
+		{"branch", "remote-branch", "divergence", "flags"},
+		{"branch", "stats"},
+	} {
+		if (Config{Layout: layout}).LayoutNeedsPush() {
+			t.Errorf("layout %v must not need push resolution", layout)
+		}
+	}
+}
+
 func compareStrings(t *testing.T, want, got string) {
 	if got != want {
 		t.Errorf(`
